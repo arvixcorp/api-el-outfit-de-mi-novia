@@ -164,3 +164,7 @@ dist/
 logs/
 uploads/
 ideas.md
+
+# Cliente de Prisma generado
+src/generated/
+/prisma
