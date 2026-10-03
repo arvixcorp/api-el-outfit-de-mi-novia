@@ -1,0 +1,212 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+enum EstadoProcesamiento {
+  pending
+  processing
+  ready
+  failed
+}
+
+enum Categoria {
+  top
+  bottom
+  vestido
+  outerwear
+  calzado
+  bolso
+  accesorio
+}
+
+enum Patron {
+  liso
+  rayas
+  cuadros
+  floral
+  estampado
+  otro
+}
+
+enum OrigenOutfit {
+  ia
+  manual
+}
+
+enum RatingOutfit {
+  me_gusta
+  no_me_gusta
+}
+
+model User {
+  id              String   @id @default(uuid()) @db.Char(36)
+  email           String   @unique
+  passwordHash    String   @map("password_hash")
+  nombre          String
+  estiloPreferido String?  @map("estilo_preferido") @db.Text
+  ciudad          String?
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  garments      Garment[]
+  outfits       Outfit[]
+  wearLogs      WearLog[]
+  refreshTokens RefreshToken[]
+  aiUsage       AiUsage[]
+  recommendationCache RecommendationCache[]
+
+  @@map("users")
+}
+
+/** Llamadas a la IA por usuaria y dia (limite diario). */
+model AiUsage {
+  userId   String   @map("user_id") @db.Char(36)
+  fecha    DateTime @db.Date
+  llamadas Int      @default(0)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@id([userId, fecha])
+  @@map("ai_usage")
+}
+
+/** Cache de recomendaciones: misma peticion + mismo armario = misma respuesta. */
+model RecommendationCache {
+  id        String   @id @default(uuid()) @db.Char(36)
+  userId    String   @map("user_id") @db.Char(36)
+  clave     String   @db.VarChar(64)
+  resultado Json
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clave])
+  @@map("recommendation_cache")
+}
+
+model RefreshToken {
+  id        String    @id @default(uuid()) @db.Char(36)
+  userId    String    @map("user_id") @db.Char(36)
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("refresh_tokens")
+}
+
+model Garment {
+  id                  String              @id @default(uuid()) @db.Char(36)
+  userId              String              @map("user_id") @db.Char(36)
+  estadoProcesamiento EstadoProcesamiento @default(pending) @map("estado_procesamiento")
+  urlOriginal         String?             @map("url_original") @db.VarChar(1024)
+  urlSinFondo         String?             @map("url_sin_fondo") @db.VarChar(1024)
+  urlThumbnail        String?             @map("url_thumbnail") @db.VarChar(1024)
+  blurhash            String?
+  ancho               Int?
+  alto                Int?
+  colorDominanteHex   String?             @map("color_dominante_hex") @db.VarChar(9)
+  coloresSecundarios  Json?               @map("colores_secundarios")
+  categoria           Categoria?
+  subcategoria        String?
+  patron              Patron?
+  material            String?
+  formalidad          Int?                @db.TinyInt
+  // Arreglos de texto guardados como JSON (MySQL no tiene arrays nativos).
+  temporadas          Json?
+  ocasiones           Json?
+  marca               String?
+  notas               String?             @db.Text
+  favorito            Boolean             @default(false)
+  vecesUsada          Int                 @default(0) @map("veces_usada")
+  ultimaVezUsada      DateTime?           @map("ultima_vez_usada")
+  // Se marca cuando la app confirma que la subida al storage termino.
+  confirmedAt         DateTime?           @map("confirmed_at")
+  descripcionIa       String?             @map("descripcion_ia") @db.Text
+  // Cola de procesamiento (worker en la propia API, sin Redis).
+  intentos            Int                 @default(0)
+  errorProcesamiento  String?             @map("error_procesamiento") @db.Text
+  procesandoDesde     DateTime?           @map("procesando_desde")
+  proximoIntento      DateTime?           @map("proximo_intento")
+  createdAt          DateTime            @default(now()) @map("created_at")
+  deletedAt           DateTime?           @map("deleted_at")
+
+  user        User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outfitItems OutfitItem[]
+
+  @@index([userId])
+  @@index([userId, categoria, deletedAt])
+  @@index([estadoProcesamiento])
+  @@map("garments")
+}
+
+model Outfit {
+  id            String       @id @default(uuid()) @db.Char(36)
+  userId        String       @map("user_id") @db.Char(36)
+  nombre        String?
+  origen        OrigenOutfit
+  ocasion       String?
+  climaContexto Json?        @map("clima_contexto")
+  explicacionIa String?      @map("explicacion_ia") @db.Text
+  favorito      Boolean      @default(false)
+  // Las recomendaciones de la IA nacen sin guardar; la usuaria decide guardarlas.
+  guardado      Boolean      @default(false)
+  createdAt     DateTime     @default(now()) @map("created_at")
+
+  user     User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items    OutfitItem[]
+  feedback OutfitFeedback[]
+  wearLogs WearLog[]
+
+  @@index([userId])
+  @@map("outfits")
+}
+
+model OutfitItem {
+  outfitId  String @map("outfit_id") @db.Char(36)
+  garmentId String @map("garment_id") @db.Char(36)
+  // Orden visual / capa (0 = al fondo).
+  posicion  Int    @default(0)
+  // Posicion libre en el lienzo: {x, y} (0..1) y escala. Si es null se usa la plantilla por categoria.
+  layout    Json?
+
+  outfit  Outfit  @relation(fields: [outfitId], references: [id], onDelete: Cascade)
+  garment Garment @relation(fields: [garmentId], references: [id], onDelete: Cascade)
+
+  @@id([outfitId, garmentId])
+  @@index([garmentId])
+  @@map("outfit_items")
+}
+
+model OutfitFeedback {
+  id         String       @id @default(uuid()) @db.Char(36)
+  outfitId   String       @map("outfit_id") @db.Char(36)
+  rating     RatingOutfit
+  comentario String?      @db.Text
+  createdAt  DateTime     @default(now()) @map("created_at")
+
+  outfit Outfit @relation(fields: [outfitId], references: [id], onDelete: Cascade)
+
+  @@index([outfitId])
+  @@map("outfit_feedback")
+}
+
+model WearLog {
+  id       String   @id @default(uuid()) @db.Char(36)
+  userId   String   @map("user_id") @db.Char(36)
+  outfitId String?  @map("outfit_id") @db.Char(36)
+  fecha    DateTime @db.Date
+
+  user   User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  outfit Outfit? @relation(fields: [outfitId], references: [id], onDelete: SetNull)
+
+  @@index([userId, fecha])
+  @@map("wear_log")
+}
